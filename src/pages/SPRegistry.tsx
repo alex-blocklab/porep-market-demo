@@ -1,10 +1,14 @@
+import { useState } from 'react'
 import type { StorageProvider, Deal, DealState } from '../types'
 import { formatBytes, formatFIL } from '../utils'
 
 interface Props {
   providers: StorageProvider[]
   deals: Deal[]
+  mode: 'demo' | 'live'
   onUpdateDealState: (dealId: number, state: DealState) => void
+  onLiveAccept: (dealId: number) => Promise<void>
+  onLiveReject: (dealId: number) => Promise<void>
 }
 
 function CapBar({ label, value, max = 100, unit = '' }: { label: string; value: number; max?: number; unit?: string }) {
@@ -22,7 +26,57 @@ function CapBar({ label, value, max = 100, unit = '' }: { label: string; value: 
   )
 }
 
-export function SPRegistry({ providers, deals, onUpdateDealState }: Props) {
+function DealActionButtons({ dealId, mode, onUpdateDealState, onLiveAccept, onLiveReject }: {
+  dealId: number
+  mode: 'demo' | 'live'
+  onUpdateDealState: (id: number, s: DealState) => void
+  onLiveAccept: (id: number) => Promise<void>
+  onLiveReject: (id: number) => Promise<void>
+}) {
+  const [busy, setBusy] = useState<'accept' | 'reject' | null>(null)
+  const [err, setErr] = useState('')
+
+  const handle = async (action: 'accept' | 'reject') => {
+    setErr('')
+    setBusy(action)
+    try {
+      if (mode === 'live') {
+        if (action === 'accept') await onLiveAccept(dealId)
+        else await onLiveReject(dealId)
+      } else {
+        onUpdateDealState(dealId, action === 'accept' ? 'Accepted' : 'Rejected')
+      }
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 items-end">
+      <div className="flex gap-2">
+        <button
+          onClick={() => handle('accept')}
+          disabled={busy !== null}
+          className="px-3 py-1 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs rounded font-medium cursor-pointer border-0 transition-colors"
+        >
+          {busy === 'accept' ? '…' : 'Accept'}
+        </button>
+        <button
+          onClick={() => handle('reject')}
+          disabled={busy !== null}
+          className="px-3 py-1 bg-slate-700 hover:bg-red-700 disabled:opacity-50 text-slate-300 hover:text-white text-xs rounded font-medium cursor-pointer border-0 transition-colors"
+        >
+          {busy === 'reject' ? '…' : 'Reject'}
+        </button>
+      </div>
+      {err && <span className="text-red-400 text-xs">{err}</span>}
+    </div>
+  )
+}
+
+export function SPRegistry({ providers, deals, mode, onUpdateDealState, onLiveAccept, onLiveReject }: Props) {
   const pendingDeals = deals.filter(d => d.state === 'Proposed')
 
   return (
@@ -47,20 +101,13 @@ export function SPRegistry({ providers, deals, onUpdateDealState }: Props) {
                     <span className="mx-2 text-slate-600">·</span>
                     <span className="text-slate-400">{formatBytes(deal.terms.dealSizeBytes)} at {formatFIL(deal.terms.priceForDeal)}</span>
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => onUpdateDealState(deal.dealId, 'Accepted')}
-                      className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white text-xs rounded font-medium cursor-pointer border-0 transition-colors"
-                    >
-                      Accept
-                    </button>
-                    <button
-                      onClick={() => onUpdateDealState(deal.dealId, 'Rejected')}
-                      className="px-3 py-1 bg-slate-700 hover:bg-red-700 text-slate-300 hover:text-white text-xs rounded font-medium cursor-pointer border-0 transition-colors"
-                    >
-                      Reject
-                    </button>
-                  </div>
+                  <DealActionButtons
+                    dealId={deal.dealId}
+                    mode={mode}
+                    onUpdateDealState={onUpdateDealState}
+                    onLiveAccept={onLiveAccept}
+                    onLiveReject={onLiveReject}
+                  />
                 </div>
               )
             })}
@@ -83,9 +130,7 @@ export function SPRegistry({ providers, deals, onUpdateDealState }: Props) {
                     <span className={`w-2.5 h-2.5 rounded-full ${sp.status === 'active' ? 'bg-green-400' : 'bg-slate-600'}`} />
                     <h3 className="font-semibold text-white">{sp.label}</h3>
                   </div>
-                  <div className="text-xs text-slate-500 font-mono mt-1">
-                    Actor ID: t0{sp.actorId}
-                  </div>
+                  <div className="text-xs text-slate-500 font-mono mt-1">Actor ID: t0{sp.actorId}</div>
                 </div>
                 <div className="text-right">
                   {sp.autoAccept ? (

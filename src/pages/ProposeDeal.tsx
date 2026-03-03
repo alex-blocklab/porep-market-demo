@@ -1,13 +1,17 @@
 import { useState } from 'react'
 import type { AppState, Deal } from '../types'
 import { formatFIL } from '../utils'
+import { sendProposeDeal, sendAcceptDeal, type CachedDealTerms } from '../lib/contracts'
 
 interface Props {
   state: AppState
+  /** Demo mode: deal added to local state */
   onDealCreated: (deal: Deal) => void
+  /** Live mode: deal created on-chain; cache entry provided for terms */
+  onLiveDealCreated: (deal: Deal, cached: CachedDealTerms) => void
 }
 
-export function ProposeDeal({ state, onDealCreated }: Props) {
+export function ProposeDeal({ state, onDealCreated, onLiveDealCreated }: Props) {
   const { providers, deals, mode } = state
 
   const [form, setForm] = useState({
@@ -21,12 +25,13 @@ export function ProposeDeal({ state, onDealCreated }: Props) {
   })
 
   const [submitting, setSubmitting] = useState(false)
+  const [txStatus, setTxStatus] = useState('')
   const [error, setError] = useState('')
 
   const priceWei = BigInt(Math.floor(parseFloat(form.priceFIL || '0') * 1e18))
   const dealSizeBytes = BigInt(form.dealSizeGiB) * BigInt(1024 ** 3)
 
-  // Find matching provider (mirror contract logic)
+  // Mirror contract matching logic
   const matchingProvider = providers
     .filter(sp => {
       if (sp.status !== 'active') return false
@@ -41,19 +46,18 @@ export function ProposeDeal({ state, onDealCreated }: Props) {
     })
     .sort((a, b) => Number(a.committedBytes - b.committedBytes))[0]
 
-  const autoApprove = matchingProvider
-    && matchingProvider.defaultPricePerDeal > 0n
-    && priceWei >= matchingProvider.defaultPricePerDeal
+  const autoApprove =
+    matchingProvider &&
+    matchingProvider.defaultPricePerDeal > 0n &&
+    priceWei >= matchingProvider.defaultPricePerDeal
 
-  const handleSubmit = async () => {
-    if (!matchingProvider) {
-      setError('No provider matches your requirements')
-      return
-    }
+  // ── Demo submit ────────────────────────────────────────────────────────────
+
+  const handleDemoSubmit = async () => {
+    if (!matchingProvider) { setError('No provider matches your requirements'); return }
     setError('')
     setSubmitting(true)
-
-    await new Promise(r => setTimeout(r, 800)) // simulate tx
+    await new Promise(r => setTimeout(r, 800))
 
     const newDeal: Deal = {
       dealId: Math.max(...deals.map(d => d.dealId), 0) + 1,
@@ -65,11 +69,7 @@ export function ProposeDeal({ state, onDealCreated }: Props) {
         latencyMs: form.latencyMs,
         indexingPct: form.indexingPct,
       },
-      terms: {
-        dealSizeBytes,
-        priceForDeal: priceWei,
-        durationEpochs: form.durationDays * 2880,
-      },
+      terms: { dealSizeBytes, priceForDeal: priceWei, durationEpochs: form.durationDays * 2880 },
       state: 'Proposed',
       railId: 0,
       validator: '0x0000000000000000000000000000000000000000',
@@ -78,7 +78,6 @@ export function ProposeDeal({ state, onDealCreated }: Props) {
       autoAccepted: autoApprove ?? false,
     }
 
-    // If auto-approve, immediately accept
     if (autoApprove) {
       await new Promise(r => setTimeout(r, 400))
       newDeal.state = 'Accepted'
@@ -90,13 +89,81 @@ export function ProposeDeal({ state, onDealCreated }: Props) {
     onDealCreated(newDeal)
   }
 
+  // ── Live submit ────────────────────────────────────────────────────────────
+
+  const handleLiveSubmit = async () => {
+    if (!matchingProvider) { setError('No provider matches your requirements'); return }
+    setError('')
+    setSubmitting(true)
+    setTxStatus('Sending proposeDeal transaction…')
+
+    const terms = {
+      dealSizeBytes,
+      priceForDeal: priceWei,
+      durationEpochs: form.durationDays * 2880,
+    }
+    const requirements = {
+      retrievabilityPct: form.retrievabilityPct,
+      bandwidthMbps: form.bandwidthMbps,
+      latencyMs: form.latencyMs,
+      indexingPct: form.indexingPct,
+    }
+
+    let dealId: number
+    try {
+      dealId = await sendProposeDeal(requirements, terms)
+    } catch (err) {
+      setError(`proposeDeal failed: ${err}`)
+      setSubmitting(false)
+      setTxStatus('')
+      return
+    }
+
+    const createdAt = Date.now()
+    let autoAccepted = false
+
+    if (autoApprove) {
+      setTxStatus('Auto-accepting deal…')
+      try {
+        await sendAcceptDeal(dealId)
+        autoAccepted = true
+      } catch (err) {
+        setError(`Deal #${dealId} proposed but auto-accept failed: ${err}`)
+      }
+    }
+
+    setTxStatus('')
+    setSubmitting(false)
+
+    const deal: Deal = {
+      dealId,
+      client: state.walletAddress || '0x0000000000000000000000000000000000000000',
+      providerActorId: matchingProvider.actorId,
+      requirements,
+      terms,
+      state: autoAccepted ? 'Accepted' : 'Proposed',
+      railId: 0,
+      validator: '0x0000000000000000000000000000000000000000',
+      createdAt,
+      updatedAt: Date.now(),
+      autoAccepted,
+    }
+
+    onLiveDealCreated(deal, { terms, createdAt, autoAccepted })
+  }
+
+  const handleSubmit = mode === 'live' ? handleLiveSubmit : handleDemoSubmit
+
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
         <h1 className="text-2xl font-bold text-white">Propose a Deal</h1>
         <p className="text-slate-500 text-sm mt-1">
-          Define your storage requirements. The market will automatically match you with the best provider.
-          {mode === 'demo' && <span className="ml-2 text-amber-400">(Demo mode — no on-chain transaction)</span>}
+          Define your storage requirements. The market will automatically match you with the best
+          provider.
+          {mode === 'demo' && (
+            <span className="ml-2 text-amber-400">(Demo mode — no on-chain transaction)</span>
+          )}
         </p>
       </div>
 
@@ -110,16 +177,19 @@ export function ProposeDeal({ state, onDealCreated }: Props) {
             { key: 'indexingPct', label: 'Indexing', unit: '%', max: 100 },
           ].map(f => (
             <div key={f.key}>
-              <label className="block text-xs text-slate-400 mb-1.5">{f.label} (min {f.unit})</label>
+              <label className="block text-xs text-slate-400 mb-1.5">
+                {f.label} (min {f.unit})
+              </label>
               <div className="flex items-center gap-3">
                 <input
-                  type="range"
-                  min={0} max={f.max}
+                  type="range" min={0} max={f.max}
                   value={form[f.key as keyof typeof form] as number}
                   onChange={e => setForm(prev => ({ ...prev, [f.key]: parseInt(e.target.value) }))}
                   className="flex-1 accent-blue-500"
                 />
-                <span className="text-slate-300 text-sm w-12 text-right">{form[f.key as keyof typeof form]}{f.unit}</span>
+                <span className="text-slate-300 text-sm w-12 text-right">
+                  {form[f.key as keyof typeof form]}{f.unit}
+                </span>
               </div>
             </div>
           ))}
@@ -223,8 +293,16 @@ export function ProposeDeal({ state, onDealCreated }: Props) {
         )}
       </div>
 
+      {txStatus && (
+        <div className="bg-blue-950/30 border border-blue-900 rounded-lg px-4 py-3 text-blue-400 text-sm font-mono">
+          ⟳ {txStatus}
+        </div>
+      )}
+
       {error && (
-        <div className="bg-red-950/30 border border-red-900 rounded-lg px-4 py-3 text-red-400 text-sm">{error}</div>
+        <div className="bg-red-950/30 border border-red-900 rounded-lg px-4 py-3 text-red-400 text-sm">
+          {error}
+        </div>
       )}
 
       <button

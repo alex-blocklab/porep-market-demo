@@ -1,16 +1,40 @@
+import { useState } from 'react'
 import type { Deal, DealState, StorageProvider } from '../types'
 import { formatBytes, formatFIL, formatTime, epochsToDays, shortAddr, stateColor, stateDot } from '../utils'
 
 interface Props {
   deal: Deal
   provider: StorageProvider
+  mode: 'demo' | 'live'
   onUpdateState: (dealId: number, state: DealState) => void
+  onLiveAccept: (dealId: number) => Promise<void>
+  onLiveReject: (dealId: number) => Promise<void>
   onBack: () => void
 }
 
 const STATE_FLOW: DealState[] = ['Proposed', 'Accepted', 'Completed']
 
-export function DealDetail({ deal, provider, onUpdateState, onBack }: Props) {
+export function DealDetail({ deal, provider, mode, onUpdateState, onLiveAccept, onLiveReject, onBack }: Props) {
+  const [busy, setBusy] = useState<'accept' | 'reject' | null>(null)
+  const [txErr, setTxErr] = useState('')
+
+  const handleAction = async (action: 'accept' | 'reject') => {
+    setTxErr('')
+    setBusy(action)
+    try {
+      if (mode === 'live') {
+        if (action === 'accept') await onLiveAccept(deal.dealId)
+        else await onLiveReject(deal.dealId)
+      } else {
+        onUpdateState(deal.dealId, action === 'accept' ? 'Accepted' : 'Rejected')
+      }
+    } catch (e) {
+      setTxErr(String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   if (!deal) return null
 
   const currentIdx = STATE_FLOW.indexOf(deal.state as DealState)
@@ -92,19 +116,24 @@ export function DealDetail({ deal, provider, onUpdateState, onBack }: Props) {
             {provider?.label} must accept or reject this deal.
             {!provider?.autoAccept && ' This provider requires manual acceptance.'}
           </p>
-          <div className="flex gap-3">
-            <button
-              onClick={() => onUpdateState(deal.dealId, 'Accepted')}
-              className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white text-sm rounded-lg font-medium cursor-pointer border-0 transition-colors"
-            >
-              Accept Deal (as SP)
-            </button>
-            <button
-              onClick={() => onUpdateState(deal.dealId, 'Rejected')}
-              className="px-4 py-2 bg-slate-700 hover:bg-red-800 text-slate-300 hover:text-white text-sm rounded-lg font-medium cursor-pointer border-0 transition-colors"
-            >
-              Reject Deal
-            </button>
+          <div className="flex flex-col gap-2">
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleAction('accept')}
+                disabled={busy !== null}
+                className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium cursor-pointer border-0 transition-colors"
+              >
+                {busy === 'accept' ? 'Accepting…' : 'Accept Deal (as SP)'}
+              </button>
+              <button
+                onClick={() => handleAction('reject')}
+                disabled={busy !== null}
+                className="px-4 py-2 bg-slate-700 hover:bg-red-800 disabled:opacity-50 text-slate-300 hover:text-white text-sm rounded-lg font-medium cursor-pointer border-0 transition-colors"
+              >
+                {busy === 'reject' ? 'Rejecting…' : 'Reject Deal'}
+              </button>
+            </div>
+            {txErr && <p className="text-red-400 text-xs font-mono">{txErr}</p>}
           </div>
         </div>
       )}

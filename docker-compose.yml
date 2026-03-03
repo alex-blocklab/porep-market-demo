@@ -1,4 +1,5 @@
 version: "3.8"
+
 services:
   demo:
     build: .
@@ -7,3 +8,22 @@ services:
     restart: unless-stopped
     environment:
       - NODE_ENV=production
+      # Inject env at runtime via nginx (these are embedded in the built JS at build time)
+      # Rebuild the image after changing contract addresses.
+    env_file:
+      - .env
+
+  # Cloudflare tunnel — provides HTTPS access to the demo
+  # Setup: cloudflared tunnel create porep-demo
+  #         cloudflared tunnel route dns porep-demo demo.yourhost.example
+  # Then set TUNNEL_TOKEN below (from: cloudflared tunnel token <name>)
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      - demo
+    profiles:
+      - tunnel
